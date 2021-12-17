@@ -21,11 +21,25 @@ import (
 	"bytes"
 	"encoding/gob"
 	"labrpc"
+	"math/rand"
 	"sync"
+	"time"
 )
 
-// import "bytes"
-// import "encoding/gob"
+type RFState int
+const (
+	Follower   RFState = iota
+	Candidate
+	Leader
+	Dead
+)
+
+const ElectionTimeOut = 150 * time.Millisecond
+const HeartBeatTimeInterval = 50 * time.Millisecond
+
+func (rf *Raft) getRandElectionTimeout() time.Duration {
+	return ElectionTimeOut * (time.Duration(rand.Int63()) % ElectionTimeOut)
+}
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -42,6 +56,7 @@ type ApplyMsg struct {
 type Log struct {
 	command interface{}
 	term    int
+	index   int
 }
 
 //
@@ -56,7 +71,7 @@ type Raft struct {
 	// Your data here.
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	state       int // 0 means loader, 1 means followers, 2 means candidate
+	state 		RFState
 
 	// Persistent state
 	currentTerm int
@@ -68,6 +83,10 @@ type Raft struct {
 	lastApplied int
 	nextIndex   []int
 	matchIndex  []int
+
+	// Timers
+	electionTimer *time.Timer
+	hearBeatTimer *time.Timer
 }
 
 // return currentTerm and whether this server
@@ -146,7 +165,11 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here.
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if args.Term > rf.currentTerm {
+
+	}
 }
 
 //
@@ -168,6 +191,29 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	return ok
+}
+
+type AppendEntriesArgs struct {
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []Log
+	LeaderCommit int
+}
+
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+func (rf *Raft) ReceiveAppendEntries() {
+
+}
+
+func (rf *Raft) SendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.ReceiveAppendEntries", args, reply)
 	return ok
 }
 
@@ -219,11 +265,92 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-
-	// Your initialization code here.
+	rf.state = Follower
+	rf.logs = make([]Log, 1)
+	rf.electionTimer = time.NewTimer(rf.getRandElectionTimeout())
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	go func(rf *Raft) {
+		for {
+			select {
+			case <-rf.electionTimer.C:
+				go rf.startElection()
+			}
+		}
+	}(rf)
+
 	return rf
+}
+
+//func (rf *Raft) runElectionTimer() {
+//	rf.mu.Lock()
+//	currentTerm := rf.currentTerm
+//	rf.mu.Unlock()
+//	for {
+//		select {
+//		case <-rf.electionTimer.C:
+//			rf.mu.Lock()
+//			// the server is now a leader
+//			if rf.state == 0 {
+//				rf.mu.Unlock()
+//				return
+//			}
+//			if currentTerm != rf.currentTerm {
+//				rf.mu.Unlock()
+//				return
+//			}
+//			rf.startElection()
+//			rf.mu.Unlock()
+//		}
+//	}
+//}
+
+func (rf *Raft) startElection() {
+	rf.mu.Lock()
+	if rf.state == Leader {
+		rf.mu.Unlock()
+		return
+	}
+	rf.becomeCandidate()
+	voteCount := 1
+	for peer := range rf.peers {
+		go func(i int, rf *Raft) {
+			args := RequestVoteArgs{
+				rf.currentTerm,
+				rf.me,
+				len(rf.logs) - 1,
+				rf.logs[len(rf.logs)-1].term,
+			}
+			reply := &RequestVoteReply{}
+			rf.sendRequestVote(i, args, reply)
+			if reply.VoteGranted {
+				voteCount =+ 1
+			}
+		}(peer, rf)
+	}
+
+	if voteCount >= len(rf.peers) / 2 {
+		rf.becomeLeader()
+	}
+	rf.mu.Unlock()
+}
+
+func (rf *Raft) becomeLeader()  {
+
+}
+
+func (rf *Raft) becomeCandidate() {
+	rf.state = Candidate
+	rf.currentTerm += 1
+	rf.votedFor = rf.me
+	rf.electionTimer.Reset(rf.getRandElectionTimeout())
+}
+
+func (rf *Raft) becomeFollower(term int)  {
+	rf.state = Follower
+	rf.currentTerm = term
+	rf.votedFor = -1
+	rf.electionTimer.Reset(rf.getRandElectionTimeout())
 }
