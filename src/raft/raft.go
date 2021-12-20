@@ -66,9 +66,9 @@ type ApplyMsg struct {
 }
 
 type Log struct {
-	command interface{}
-	term    int
-	index   int
+	Command interface{}
+	Term    int
+	Index   int
 }
 
 //
@@ -175,6 +175,9 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
+	rf.d("RequestVote: %+v [currentTerm=%d, votedFor=%d]", args, rf.currentTerm, rf.votedFor)
+
 	if args.Term > rf.currentTerm {
 		rf.becomeFollower(args.Term)
 	}
@@ -183,7 +186,6 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = args.CandidateId
 		rf.electionTimer.Reset(rf.getRandElectionTimeout())
 		reply.VoteGranted = true
-		rf.d("Vote for %d", args.CandidateId)
 	} else {
 		reply.VoteGranted = false
 	}
@@ -227,12 +229,28 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
-func (rf *Raft) ReceiveAppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.electionTimer.Reset(rf.getRandElectionTimeout())
+func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.d("Received AppendEntries from %d in term %d", args.LeaderId, args.Term)
+	if args.Term > rf.currentTerm {
+		rf.becomeFollower(args.Term)
+	}
+
+	reply.Success = false
+	if args.Term == rf.currentTerm {
+		if rf.state != Follower {
+			rf.becomeFollower(args.Term)
+		}
+		rf.electionTimer.Reset(rf.getRandElectionTimeout())
+		reply.Success = true
+	}
+	reply.Term = rf.currentTerm
 }
 
 func (rf *Raft) SendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.ReceiveAppendEntries", args, reply)
+	//rf.d("SendAppendEntries : %+v", args)
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
 
@@ -331,7 +349,7 @@ func (rf *Raft) startElection() {
 				savedCandidateTerm,
 				rf.me,
 				len(rf.logs) - 1,
-				rf.logs[len(rf.logs)-1].term,
+				rf.logs[len(rf.logs)-1].Term,
 			}
 			reply := &RequestVoteReply{}
 			ok := rf.sendRequestVote(i, args, reply)
@@ -361,7 +379,34 @@ func (rf *Raft) startElection() {
 	rf.mu.Unlock()
 }
 
+func (rf *Raft) sendHeartBeat() {
+	rf.mu.Lock()
+	currentTerm := rf.currentTerm
+	rf.mu.Unlock()
+
+	for peer := range rf.peers {
+		if peer == rf.me {
+			continue
+		}
+		args := AppendEntriesArgs{
+			currentTerm, rf.me, 0, 0, nil, 0,
+		}
+		reply := &AppendEntriesReply{}
+		go func(id int) {
+			//rf.d("SendHeartBeat args %+v", args)
+			rf.SendAppendEntries(id, args, reply)
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			if reply.Term > currentTerm {
+				rf.becomeFollower(reply.Term)
+				return
+			}
+		}(peer)
+	}
+}
+
 func (rf *Raft) becomeLeader() {
+	rf.d("Become Leader with term: %d", rf.currentTerm)
 	rf.state = Leader
 	go func() {
 		for {
@@ -377,29 +422,8 @@ func (rf *Raft) becomeLeader() {
 	}()
 }
 
-func (rf *Raft) sendHeartBeat() {
-	rf.mu.Lock()
-	currentTerm := rf.currentTerm
-	rf.mu.Unlock()
-
-	for peer := range rf.peers {
-		args := AppendEntriesArgs{
-			currentTerm, rf.me, 0, 0, rf.logs, 0,
-		}
-		reply := &AppendEntriesReply{}
-		go func(id int) {
-			rf.SendAppendEntries(id, args, reply)
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			if reply.Term > currentTerm {
-				rf.becomeFollower(reply.Term)
-				return
-			}
-		}(peer)
-	}
-}
-
 func (rf *Raft) becomeCandidate() {
+	rf.d("Become Candidate with term: %d", rf.currentTerm)
 	rf.state = Candidate
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
@@ -407,6 +431,7 @@ func (rf *Raft) becomeCandidate() {
 }
 
 func (rf *Raft) becomeFollower(term int) {
+	rf.d("Become Follower: Current Term: %d, term : %d", rf.currentTerm, term)
 	rf.state = Follower
 	rf.currentTerm = term
 	rf.votedFor = -1

@@ -33,6 +33,7 @@ func TestInitialElection(t *testing.T) {
 	term1 := cfg.checkTerms()
 	time.Sleep(2 * RaftElectionTimeout)
 	term2 := cfg.checkTerms()
+	//fmt.Printf("term1 %d, term2 %d\n", term1, term2)
 	if term1 != term2 {
 		fmt.Printf("warning: term changed even though there were no failures")
 	}
