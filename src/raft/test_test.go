@@ -298,19 +298,25 @@ func TestRejoin(t *testing.T) {
 	cfg.disconnect(leader1)
 
 	// make old leader try to agree on some entries
+	//_, isLeader := cfg.rafts[leader1].GetState()
+	//fmt.Printf("%+v\n", isLeader)
 	cfg.rafts[leader1].Start(102)
 	cfg.rafts[leader1].Start(103)
 	cfg.rafts[leader1].Start(104)
-
+	//fmt.Printf("Leader1: %d\n", leader1)
 	// new leader commits, also for index=2
 	cfg.one(103, 2)
 
 	// new leader network failure
 	leader2 := cfg.checkOneLeader()
+	//fmt.Printf("Leader2 : %d\n", leader2)
 	cfg.disconnect(leader2)
 
 	// old leader connected again
 	cfg.connect(leader1)
+
+	//leader3 := cfg.checkOneLeader()
+	//fmt.Printf("Leader3 : %d\n", leader3)
 
 	cfg.one(104, 2)
 
