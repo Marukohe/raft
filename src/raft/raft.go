@@ -34,7 +34,6 @@ const (
 	Follower RFState = iota
 	Candidate
 	Leader
-	Dead
 )
 
 const ElectionTimeOut = 150 * time.Millisecond
@@ -172,8 +171,8 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	//rf.d("RequestVote: %+v [currentTerm=%d, votedFor=%d]", args, rf.currentTerm, rf.votedFor)
 
 	lastIndex, lastTerm := rf.getLogIndexAndTerm()
-	rf.d("VoteFor %d with lastIndex: %d, lastTerm :%d, args.Term: %d, args.LastIndex: %d",
-		args.CandidateId, lastIndex, lastTerm, args.LastLogTerm)
+	//rf.d("VoteFor %d with lastIndex: %d, lastTerm :%d, args.Term: %d, args.LastIndex: %d",
+	//	args.CandidateId, lastIndex, lastTerm, args.LastLogTerm)
 	if args.Term > rf.currentTerm {
 		rf.becomeFollower(args.Term)
 	}
@@ -181,6 +180,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.currentTerm == args.Term && (rf.votedFor == -1 || rf.votedFor == args.CandidateId) &&
 		(args.LastLogTerm > lastTerm || (args.LastLogTerm == lastTerm && args.LastLogIndex >= lastIndex)) {
 		rf.votedFor = args.CandidateId
+		rf.persist()
 		rf.electionTimer.Reset(rf.getRandElectionTimeout())
 		reply.VoteGranted = true
 	} else {
@@ -269,6 +269,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			}
 		}
 	}
+	rf.persist()
 	reply.Term = rf.currentTerm
 }
 
@@ -308,6 +309,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index = len(rf.logs)
 	term = rf.currentTerm
 	isLeader = true
+	rf.persist()
 
 	return index, term, isLeader
 }
@@ -357,6 +359,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.persist()
 
 	rf.d("Make Raft")
 	go func(rf *Raft) {
@@ -523,6 +526,7 @@ func (rf *Raft) becomeCandidate() {
 	rf.state = Candidate
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
+	rf.persist()
 	rf.electionTimer.Reset(rf.getRandElectionTimeout())
 }
 
